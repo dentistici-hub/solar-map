@@ -93,7 +93,7 @@ async function onClick(lat, lng) {
 async function fetchDataLayers(lat, lng) {
   const url = `https://solar.googleapis.com/v1/dataLayers:get`
     + `?location.latitude=${lat}&location.longitude=${lng}`
-    + `&radiusMeters=100&pixelSizeMeters=0.5&view=HEATMAP_LAYERS_ONLY&requiredQuality=LOW&key=${API_KEY}`;
+    + `&radiusMeters=100&pixelSizeMeters=0.5&view=FULL_LAYERS&requiredQuality=LOW&key=${API_KEY}`;
   const res = await fetch(url);
   const data = await res.json();
   return data.error ? null : data;
