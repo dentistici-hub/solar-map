@@ -4,81 +4,23 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Solar Map</title>
+  <script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      font-family: monospace;
-      background: #0f0f0f;
-      color: #e0e0e0;
-      display: flex;
-      flex-direction: column;
-      height: 100vh;
-    }
-
-    #map {
-      flex: 1;
-      min-height: 0;
-      cursor: crosshair;
-    }
-
-    #panel {
-      height: 260px;
-      padding: 16px 20px;
-      border-top: 1px solid #2a2a2a;
-      overflow-y: auto;
-      background: #0f0f0f;
-    }
-
-    #status {
-      font-size: 12px;
-      color: #888;
-      margin-bottom: 12px;
-    }
-
-    #results {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 10px;
-    }
-
-    .card {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 4px;
-      padding: 10px 14px;
-    }
-
-    .card .label {
-      font-size: 10px;
-      color: #666;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 4px;
-    }
-
-    .card .value {
-      font-size: 18px;
-      color: #f0c040;
-      font-weight: bold;
-    }
-
-    .card .unit {
-      font-size: 11px;
-      color: #888;
-      margin-left: 4px;
-    }
-
-    .error {
-      color: #e05555;
-      font-size: 13px;
-      padding: 8px 0;
-    }
-
-    .coords {
-      color: #4a9eff;
-      font-size: 11px;
-    }
+    body { font-family: monospace; background: #0f0f0f; color: #e0e0e0; display: flex; flex-direction: column; height: 100vh; }
+    #map { flex: 1; min-height: 0; cursor: crosshair; }
+    #panel { height: 200px; padding: 12px 20px; border-top: 1px solid #2a2a2a; overflow-y: auto; background: #0f0f0f; }
+    #status { font-size: 12px; color: #888; margin-bottom: 8px; }
+    #legend { display: none; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 11px; color: #888; }
+    #legend-bar { width: 120px; height: 8px; border-radius: 2px; background: linear-gradient(to right, #1a0050, #7700cc, #ff6600, #ffdd00, #ffffff); }
+    #legend-range { color: #f0c040; }
+    #results { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+    .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 4px; padding: 9px 13px; }
+    .card .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+    .card .value { font-size: 17px; color: #f0c040; font-weight: bold; }
+    .card .unit { font-size: 11px; color: #888; margin-left: 4px; }
+    .error { color: #e05555; font-size: 13px; padding: 6px 0; }
+    .coords { color: #4a9eff; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -86,101 +28,187 @@
 <div id="map"></div>
 
 <div id="panel">
-  <div id="status">Click anywhere on the map to fetch solar data.</div>
+  <div id="status">Click a rooftop to see solar flux data.</div>
+  <div id="legend">
+    <span>Low</span>
+    <div id="legend-bar"></div>
+    <span>High</span>
+    <span id="legend-range"></span>
+  </div>
   <div id="results"></div>
 </div>
 
 <script>
-  const API_KEY = 'AIzaSyAL1PM6dWGNLR6Oc0uBrERpZ_dtPnHcx6E';
+const API_KEY = 'AIzaSyAL1PM6dWGNLR6Oc0uBrERpZ_dtPnHcx6E';
 
-  async function fetchSolar(lat, lng) {
-    const status = document.getElementById('status');
-    const results = document.getElementById('results');
+let map, marker, currentOverlay;
 
-    status.innerHTML = `<span class="coords">Fetching solar data for ${lat.toFixed(5)}, ${lng.toFixed(5)}...</span>`;
-    results.innerHTML = '';
+// Solar color scale: dark purple -> violet -> orange -> yellow -> white
+function solarColor(t) {
+  const stops = [
+    [26,  0,  80],   // dark purple
+    [119, 0, 204],   // violet
+    [255, 102,  0],  // orange
+    [255, 221,  0],  // yellow
+    [255, 255, 255], // white
+  ];
+  const scaled = t * (stops.length - 1);
+  const i = Math.min(Math.floor(scaled), stops.length - 2);
+  const f = scaled - i;
+  return stops[i].map((c, ch) => Math.round(c + f * (stops[i + 1][ch] - c)));
+}
 
-    const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${API_KEY}`;
+function setStatus(html) {
+  document.getElementById('status').innerHTML = html;
+}
 
-    try {
-      const res = await fetch(url);
-      const data = await res.json();
+async function onClick(lat, lng) {
+  setStatus(`<span class="coords">Loading ${lat.toFixed(5)}, ${lng.toFixed(5)}...</span>`);
+  document.getElementById('results').innerHTML = '';
+  document.getElementById('legend').style.display = 'none';
 
-      if (data.error) {
-        status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>`;
-        results.innerHTML = `<div class="error">API error ${data.error.code}: ${data.error.message}</div>`;
-        return;
-      }
+  const [layersRes, buildingRes] = await Promise.allSettled([
+    fetchDataLayers(lat, lng),
+    fetchBuildingInsights(lat, lng),
+  ]);
 
-      status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span> &mdash; ${data.name || 'building found'}`;
+  if (layersRes.status === 'fulfilled' && layersRes.value) {
+    await renderOverlay(layersRes.value);
+  }
 
-      const sp = data.solarPotential;
-      const roof = sp?.wholeRoofStats;
-
-      const cards = [
-        { label: 'Max panels', value: sp?.maxArrayPanelsCount, unit: 'panels' },
-        { label: 'Max array area', value: sp?.maxArrayAreaMeters2?.toFixed(0), unit: 'm²' },
-        { label: 'Sunshine / year', value: sp?.maxSunshineHoursPerYear?.toFixed(0), unit: 'h/yr' },
-        { label: 'Roof area', value: roof?.areaMeters2?.toFixed(0), unit: 'm²' },
-        { label: 'CO₂ offset factor', value: sp?.carbonOffsetFactorKgPerMwh?.toFixed(1), unit: 'kg/MWh' },
-        { label: 'Panel capacity', value: sp?.panelCapacityWatts, unit: 'W' },
-        { label: 'Panel height', value: sp?.panelHeightMeters, unit: 'm' },
-        { label: 'Panel width', value: sp?.panelWidthMeters, unit: 'm' },
-      ];
-
-      results.innerHTML = cards
-        .filter(c => c.value !== undefined && c.value !== null)
-        .map(c => `
-          <div class="card">
-            <div class="label">${c.label}</div>
-            <div class="value">${c.value}<span class="unit">${c.unit}</span></div>
-          </div>
-        `).join('');
-
-      if (results.innerHTML === '') {
-        results.innerHTML = `<div class="error">No solar potential data returned for this location.</div>`;
-      }
-
-    } catch (err) {
-      status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>`;
-      results.innerHTML = `<div class="error">Network error: ${err.message}</div>`;
+  if (buildingRes.status === 'fulfilled' && buildingRes.value) {
+    showStats(buildingRes.value, lat, lng);
+  } else {
+    setStatus(`<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>`);
+    if (!layersRes.value) {
+      document.getElementById('results').innerHTML = '<div class="error">No solar data for this location.</div>';
     }
   }
+}
 
-  function initMap() {
-    const map = new google.maps.Map(document.getElementById('map'), {
-      center: { lat: 45.46, lng: 9.19 }, // Milan
-      zoom: 14,
-      mapTypeId: 'hybrid',
-      disableDefaultUI: true,
-      zoomControl: true,
-    });
+async function fetchDataLayers(lat, lng) {
+  const url = `https://solar.googleapis.com/v1/dataLayers:get`
+    + `?location.latitude=${lat}&location.longitude=${lng}`
+    + `&radiusMeters=100&view=HEATMAP_LAYERS_ONLY&requiredQuality=LOW&key=${API_KEY}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return data.error ? null : data;
+}
 
-    let marker = null;
+async function renderOverlay(layers) {
+  if (!layers.annualFluxUrl) return;
 
-    map.addListener('click', (e) => {
-      const lat = e.latLng.lat();
-      const lng = e.latLng.lng();
+  const buffer = await fetch(layers.annualFluxUrl + `&key=${API_KEY}`).then(r => r.arrayBuffer());
 
-      if (marker) marker.setMap(null);
-      marker = new google.maps.Marker({
-        position: e.latLng,
-        map,
-        icon: {
-          path: google.maps.SymbolPath.CIRCLE,
-          scale: 6,
-          fillColor: '#f0c040',
-          fillOpacity: 1,
-          strokeColor: '#0f0f0f',
-          strokeWeight: 2,
-        }
-      });
+  const tiff = await GeoTIFF.fromArrayBuffer(buffer);
+  const image = await tiff.getImage();
+  const [fluxData] = await image.readRasters();
+  const width  = image.getWidth();
+  const height = image.getHeight();
+  const bbox   = image.getBoundingBox(); // [west, south, east, north]
 
-      fetchSolar(lat, lng);
-    });
+  const NODATA = -9999;
+  let min = Infinity, max = -Infinity;
+  for (const v of fluxData) {
+    if (v !== NODATA && v > 0) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
   }
+  if (min === Infinity) return;
 
-  window.initMap = initMap;
+  document.getElementById('legend-range').textContent = `${min.toFixed(0)}–${max.toFixed(0)} kWh/m²/yr`;
+  document.getElementById('legend').style.display = 'flex';
+
+  const canvas = document.createElement('canvas');
+  canvas.width  = width;
+  canvas.height = height;
+  const ctx     = canvas.getContext('2d');
+  const imgData = ctx.createImageData(width, height);
+  const range   = max - min || 1;
+
+  for (let i = 0; i < fluxData.length; i++) {
+    const v   = fluxData[i];
+    const idx = i * 4;
+    if (v === NODATA || v <= 0) {
+      imgData.data[idx + 3] = 0;
+    } else {
+      const [r, g, b] = solarColor((v - min) / range);
+      imgData.data[idx]     = r;
+      imgData.data[idx + 1] = g;
+      imgData.data[idx + 2] = b;
+      imgData.data[idx + 3] = 215;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
+  const bounds = { west: bbox[0], south: bbox[1], east: bbox[2], north: bbox[3] };
+  if (currentOverlay) currentOverlay.setMap(null);
+  currentOverlay = new google.maps.GroundOverlay(canvas.toDataURL(), bounds);
+  currentOverlay.setMap(map);
+}
+
+async function fetchBuildingInsights(lat, lng) {
+  const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest`
+    + `?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${API_KEY}`;
+  const res  = await fetch(url);
+  const data = await res.json();
+  return data.error ? null : data;
+}
+
+function showStats(data, lat, lng) {
+  setStatus(`<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span> — ${data.name || 'building found'}`);
+  const sp   = data.solarPotential;
+  const roof = sp?.wholeRoofStats;
+  const cards = [
+    { label: 'Max panels',      value: sp?.maxArrayPanelsCount,              unit: 'panels'  },
+    { label: 'Max array area',  value: sp?.maxArrayAreaMeters2?.toFixed(0),  unit: 'm²'      },
+    { label: 'Sunshine / year', value: sp?.maxSunshineHoursPerYear?.toFixed(0), unit: 'h/yr' },
+    { label: 'Roof area',       value: roof?.areaMeters2?.toFixed(0),        unit: 'm²'      },
+    { label: 'CO₂ offset',      value: sp?.carbonOffsetFactorKgPerMwh?.toFixed(1), unit: 'kg/MWh' },
+    { label: 'Panel capacity',  value: sp?.panelCapacityWatts,               unit: 'W'       },
+  ];
+  document.getElementById('results').innerHTML = cards
+    .filter(c => c.value !== undefined && c.value !== null)
+    .map(c => `<div class="card">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}<span class="unit">${c.unit}</span></div>
+    </div>`).join('');
+}
+
+function initMap() {
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 45.464, lng: 9.191 },
+    zoom: 18,
+    mapTypeId: 'hybrid',
+    tilt: 0,
+    disableDefaultUI: true,
+    zoomControl: true,
+  });
+
+  map.addListener('click', e => {
+    const lat = e.latLng.lat();
+    const lng = e.latLng.lng();
+
+    if (marker) marker.setMap(null);
+    marker = new google.maps.Marker({
+      position: e.latLng,
+      map,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: 5,
+        fillColor: '#f0c040',
+        fillOpacity: 1,
+        strokeColor: '#0f0f0f',
+        strokeWeight: 2,
+      }
+    });
+
+    onClick(lat, lng);
+  });
+}
+
+window.initMap = initMap;
 </script>
 
 <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAL1PM6dWGNLR6Oc0uBrERpZ_dtPnHcx6E&callback=initMap" async defer></script>
