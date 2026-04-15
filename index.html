@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Solar Map</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: monospace;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    #map {
+      flex: 1;
+      min-height: 0;
+      cursor: crosshair;
+    }
+
+    #panel {
+      height: 260px;
+      padding: 16px 20px;
+      border-top: 1px solid #2a2a2a;
+      overflow-y: auto;
+      background: #0f0f0f;
+    }
+
+    #status {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+
+    #results {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+      padding: 10px 14px;
+    }
+
+    .card .label {
+      font-size: 10px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .card .value {
+      font-size: 18px;
+      color: #f0c040;
+      font-weight: bold;
+    }
+
+    .card .unit {
+      font-size: 11px;
+      color: #888;
+      margin-left: 4px;
+    }
+
+    .error {
+      color: #e05555;
+      font-size: 13px;
+      padding: 8px 0;
+    }
+
+    .coords {
+      color: #4a9eff;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="panel">
+  <div id="status">Click anywhere on the map to fetch solar data.</div>
+  <div id="results"></div>
+</div>
+
+<script>
+  const API_KEY = 'AIzaSyAL1PM6dWGNLR6Oc0uBrERpZ_dtPnHcx6E';
+
+  async function fetchSolar(lat, lng) {
+    const status = document.getElementById('status');
+    const results = document.getElementById('results');
+
+    status.innerHTML = `<span class="coords">Fetching solar data for ${lat.toFixed(5)}, ${lng.toFixed(5)}...</span>`;
+    results.innerHTML = '';
+
+    const url = `https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${API_KEY}`;
+
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data.error) {
+        status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>`;
+        results.innerHTML = `<div class="error">API error ${data.error.code}: ${data.error.message}</div>`;
+        return;
+      }
+
+      status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span> &mdash; ${data.name || 'building found'}`;
+
+      const sp = data.solarPotential;
+      const roof = sp?.wholeRoofStats;
+
+      const cards = [
+        { label: 'Max panels', value: sp?.maxArrayPanelsCount, unit: 'panels' },
+        { label: 'Max array area', value: sp?.maxArrayAreaMeters2?.toFixed(0), unit: 'm²' },
+        { label: 'Sunshine / year', value: sp?.maxSunshineHoursPerYear?.toFixed(0), unit: 'h/yr' },
+        { label: 'Roof area', value: roof?.areaMeters2?.toFixed(0), unit: 'm²' },
+        { label: 'CO₂ offset factor', value: sp?.carbonOffsetFactorKgPerMwh?.toFixed(1), unit: 'kg/MWh' },
+        { label: 'Panel capacity', value: sp?.panelCapacityWatts, unit: 'W' },
+        { label: 'Panel height', value: sp?.panelHeightMeters, unit: 'm' },
+        { label: 'Panel width', value: sp?.panelWidthMeters, unit: 'm' },
+      ];
+
+      results.innerHTML = cards
+        .filter(c => c.value !== undefined && c.value !== null)
+        .map(c => `
+          <div class="card">
+            <div class="label">${c.label}</div>
+            <div class="value">${c.value}<span class="unit">${c.unit}</span></div>
+          </div>
+        `).join('');
+
+      if (results.innerHTML === '') {
+        results.innerHTML = `<div class="error">No solar potential data returned for this location.</div>`;
+      }
+
+    } catch (err) {
+      status.innerHTML = `<span class="coords">${lat.toFixed(5)}, ${lng.toFixed(5)}</span>`;
+      results.innerHTML = `<div class="error">Network error: ${err.message}</div>`;
+    }
+  }
+
+  function initMap() {
+    const map = new google.maps.Map(document.getElementById('map'), {
+      center: { lat: 45.46, lng: 9.19 }, // Milan
+      zoom: 14,
+      styles: [
+        { elementType: 'geometry', stylers: [{ color: '#1a1a1a' }] },
+        { elementType: 'labels.text.stroke', stylers: [{ color: '#1a1a1a' }] },
+        { elementType: 'labels.text.fill', stylers: [{ color: '#777' }] },
+        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2a2a2a' }] },
+        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0d2033' }] },
+        { featureType: 'poi', stylers: [{ visibility: 'off' }] },
+      ],
+      disableDefaultUI: true,
+      zoomControl: true,
+    });
+
+    let marker = null;
+
+    map.addListener('click', (e) => {
+      const lat = e.latLng.lat();
+      const lng = e.latLng.lng();
+
+      if (marker) marker.setMap(null);
+      marker = new google.maps.Marker({
+        position: e.latLng,
+        map,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 6,
+          fillColor: '#f0c040',
+          fillOpacity: 1,
+          strokeColor: '#0f0f0f',
+          strokeWeight: 2,
+        }
+      });
+
+      fetchSolar(lat, lng);
+    });
+  }
+
+  window.initMap = initMap;
+</script>
+
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAL1PM6dWGNLR6Oc0uBrERpZ_dtPnHcx6E&callback=initMap" async defer></script>
+
+</body>
+</html>
